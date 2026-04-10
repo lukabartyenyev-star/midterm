@@ -30,6 +30,10 @@ prepare_country <- function(yields, fx) {
 
   df <- merge(yields, fx, by = "date", sort = TRUE)
 
+  # Forward-fill FX rate across gaps before computing returns
+  for (i in seq(2, nrow(df)))
+    if (is.na(df$rate[i])) df$rate[i] <- df$rate[i - 1]
+
   spread       <- df$X10Y - df$X2Y
   df$d_y2y     <- c(NA, diff(df$X2Y))
   df$d_spread  <- c(NA, diff(spread))
