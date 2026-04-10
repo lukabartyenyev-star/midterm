@@ -16,7 +16,7 @@ library(mvtnorm)
 
 #' Compute yield curve features and FX returns for one country
 #'
-#' @param yields   Data frame with columns: date, y2y, y10y
+#' @param yields   Data frame with columns: date, X2Y, X10Y
 #'                 Yields in percent (e.g. 2.5 for 2.5%), daily frequency
 #' @param fx       Data frame with columns: date, rate
 #'                 FX as units of local currency per 1 USD
@@ -27,16 +27,16 @@ library(mvtnorm)
 #'   fx_return = log(FX_t/FX_{t-1}) (positive = local ccy depreciated)
 
 prepare_country <- function(yields, fx) {
-  
+
   df <- merge(yields, fx, by = "date", sort = TRUE)
-  
-  spread       <- df$y10y - df$y2y
-  df$d_y2y     <- c(NA, diff(df$y2y))
+
+  spread       <- df$X10Y - df$X2Y
+  df$d_y2y     <- c(NA, diff(df$X2Y))
   df$d_spread  <- c(NA, diff(spread))
   df$fx_return <- c(NA, diff(log(df$rate)))
-  
+
   df <- df[complete.cases(df[, c("d_y2y", "d_spread", "fx_return")]), ]
-  
+
   df[, c("date", "d_y2y", "d_spread", "fx_return")]
 }
 
@@ -50,19 +50,19 @@ prepare_country <- function(yields, fx) {
 #' @return Matrix (T x 2), standardised, columns: ted, vix
 
 prepare_covariates <- function(ted, vix, dates) {
-  
+
   dates     <- as.character(dates)
   ted$date  <- as.character(ted$date)
   vix$date  <- as.character(vix$date)
-  
+
   ted_vals  <- ted$ted[match(dates, ted$date)]
   vix_vals  <- vix$vix[match(dates, vix$date)]
-  
+
   Z <- cbind(
     ted = (ted_vals - mean(ted_vals, na.rm = TRUE)) / sd(ted_vals, na.rm = TRUE),
     vix = (vix_vals - mean(vix_vals, na.rm = TRUE)) / sd(vix_vals, na.rm = TRUE)
   )
-  
+
   Z
 }
 
@@ -125,7 +125,7 @@ prepare_covariates <- function(ted, vix, dates) {
 #' @return List: Mu (N x 3), Cov (3 x 3 x N), x (N x N x 3), Pi (N), LL
 
 fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
-  
+
   set.seed(seed)
   if (!is.matrix(X)) X <- as.matrix(X)
   if (!is.matrix(Z)) Z <- as.matrix(Z)
@@ -133,7 +133,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
   p     <- ncol(X)
   n_cov <- ncol(Z)
   stopifnot(nrow(Z) == T, T > N * 10)
-  
+
   # Initialise emission parameters by sorting on d_y2y (col 1)
   idx <- .divide(X, N, "sort")
   Mu  <- matrix(0, N, p)
@@ -143,22 +143,22 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
     Cov[,,i] <- cov(sub) + diag(1e-4, p)
     Mu[i, ]  <- colMeans(sub)
   }
-  
+
   Pi <- rep(1/N, N)
   x  <- array(0, dim = c(N, N, n_cov + 1))
   A  <- .compute_A(x, Z, N)
-  
+
   lik <- -Inf
   LL  <- numeric(cyc)
-  
+
   for (cycle in seq_len(cyc)) {
-    
+
     # Emission probabilities B: T x N
     B <- matrix(0, T, N)
     for (i in seq_len(N))
       B[, i] <- dmvnorm(X, mean = Mu[i, ], sigma = Cov[,, i])
     B[B == 0] <- 1e-300
-    
+
     # Forward pass
     alpha     <- matrix(0, T, N)
     sc        <- numeric(T)
@@ -172,14 +172,14 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
       alpha[t,] <- alpha[t,] / sc[t]
     }
     log_lik <- sum(log(sc))
-    
+
     # Backward pass
     beta     <- matrix(0, T, N)
     beta[T,] <- 1 / sc[T]
     for (t in (T-1):1)
       for (i in seq_len(N))
         beta[t, i] <- sum(A[i,, t] * B[t+1,] * beta[t+1,]) / sc[t]
-    
+
     # E-step
     Xi <- array(0, dim = c(T-1, N, N))
     for (t in seq_len(T-1)) {
@@ -189,10 +189,10 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
       s <- sum(Xi[t,,]); if (s > 0) Xi[t,,] <- Xi[t,,] / s
     }
     Gamma <- apply(Xi, c(1, 2), sum)
-    
+
     # M-step: Pi
     Pi <- pmax(Gamma[1,] / sum(Gamma[1,]), 1e-10)
-    
+
     # M-step: TVTP via L-BFGS-B
     # Fix diagonal of x to zero (softmax reference category)
     lb <- rep(-Inf, N * N * (n_cov + 1))
@@ -203,7 +203,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
         lb[idx_flat]    <- 0
         ub[idx_flat]    <- 0
       }
-    
+
     res <- optim(
       par     = as.vector(x),
       fn      = .obj_tvtp,
@@ -214,7 +214,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
     )
     x <- array(res$par, dim = c(N, N, n_cov + 1))
     A <- .compute_A(x, Z, N)
-    
+
     # M-step: Mu and Cov
     for (i in seq_len(N)) {
       w  <- Gamma[, i]; ws <- sum(w)
@@ -223,14 +223,14 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
       d        <- sweep(X[1:(T-1),, drop=FALSE], 2, Mu[i,])
       Cov[,,i] <- (t(d * w) %*% d) / ws + diag(1e-4, p)
     }
-    
+
     oldlik    <- lik
     lik       <- log_lik
     LL[cycle] <- lik
-    
+
     if (cycle > 2 && abs(lik - oldlik) < tol * abs(oldlik)) break
   }
-  
+
   list(Mu = Mu, Cov = Cov, x = x, Pi = Pi, LL = LL[seq_len(cycle)])
 }
 
@@ -248,26 +248,26 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
 #' @return List: states (integer T), prb (N x T)
 
 decode_country <- function(X, Z, model) {
-  
+
   if (!is.matrix(X)) X <- as.matrix(X)
   T <- nrow(X)
   N <- nrow(model$Mu)
   A <- .compute_A(model$x, Z, N)
-  
+
   B <- matrix(0, N, T)
   for (i in seq_len(N))
     B[i,] <- dmvnorm(X, mean = model$Mu[i,], sigma = model$Cov[,,i])
   B[B == 0] <- 1e-300
-  
+
   delta <- matrix(-Inf, N, T)
   psi   <- matrix(0L,   N, T)
   prb   <- matrix(0,    N, T)
   sc    <- numeric(T)
-  
+
   delta[, 1] <- log(model$Pi) + log(B[, 1])
   prb[, 1]   <- model$Pi * B[, 1]
   sc[1]      <- sum(prb[, 1]); prb[, 1] <- prb[, 1] / sc[1]
-  
+
   for (t in 2:T) {
     for (j in seq_len(N)) {
       v           <- delta[, t-1] + log(pmax(A[, j, t], 1e-300))
@@ -278,11 +278,11 @@ decode_country <- function(X, Z, model) {
     sc[t] <- sum(prb[, t])
     if (sc[t] > 0) prb[, t] <- prb[, t] / sc[t]
   }
-  
+
   states    <- integer(T)
   states[T] <- which.max(delta[, T])
   for (t in (T-1):1) states[t] <- psi[states[t+1], t]
-  
+
   list(states = states, prb = prb)
 }
 
@@ -311,29 +311,29 @@ identify_unwind_state <- function(model) {
 #' @param tol           Convergence tolerance
 
 fit_all_countries <- function(country_data, ted, vix,
-                              N = 2, cyc = 100, tol = 1e-4) {
-  
+                               N = 2, cyc = 100, tol = 1e-4) {
+
   results <- vector("list", length(country_data))
   names(results) <- names(country_data)
-  
+
   for (cc in names(country_data)) {
     cat(sprintf("\n--- Fitting %s ---\n", cc))
-    
+
     cd    <- country_data[[cc]]
     dates <- as.character(cd$date)
-    
+
     X <- as.matrix(cd[, c("d_y2y", "d_spread", "fx_return")])
     Z <- prepare_covariates(ted, vix, dates)
-    
+
     valid <- complete.cases(Z)
     X     <- X[valid, ]
     Z     <- Z[valid, ]
     dates <- dates[valid]
-    
+
     model   <- fit_country_hmm(X, Z, N = N, cyc = cyc, tol = tol)
     decoded <- decode_country(X, Z, model)
     u_state <- identify_unwind_state(model)
-    
+
     results[[cc]] <- list(
       model        = model,
       decoded      = decoded,
@@ -341,13 +341,13 @@ fit_all_countries <- function(country_data, ted, vix,
       unwind_prob  = decoded$prb[u_state, ],
       dates        = dates
     )
-    
+
     cat(sprintf("  Unwind state: %d  |  Mean unwind prob: %.3f\n",
                 u_state, mean(decoded$prb[u_state, ])))
     cat(sprintf("  Unwind state means -> d_y2y: %.4f  d_spread: %.4f  fx_ret: %.5f\n",
                 model$Mu[u_state, 1], model$Mu[u_state, 2], model$Mu[u_state, 3]))
   }
-  
+
   results
 }
 
@@ -368,13 +368,13 @@ fit_all_countries <- function(country_data, ted, vix,
 #'                        (1-threshold, threshold) are excluded
 
 build_signal <- function(hmm_results, fx_returns, rate_diffs,
-                         n_long = 3, n_short = 3,
-                         prob_threshold = 0.6) {
-  
+                          n_long = 3, n_short = 3,
+                          prob_threshold = 0.6) {
+
   countries <- names(hmm_results)
   all_dates <- sort(Reduce(intersect, lapply(hmm_results, function(r) r$dates)))
   T         <- length(all_dates)
-  
+
   unwind_mat <- matrix(NA, T, length(countries),
                        dimnames = list(all_dates, countries))
   for (cc in countries) {
@@ -382,37 +382,37 @@ build_signal <- function(hmm_results, fx_returns, rate_diffs,
     idx              <- match(all_dates, r$dates)
     unwind_mat[, cc] <- r$unwind_prob[idx]
   }
-  
+
   fx_mat   <- matrix(NA, T, length(countries), dimnames = list(all_dates, countries))
   rate_mat <- matrix(NA, T, length(countries), dimnames = list(all_dates, countries))
   for (cc in countries) {
     fx_mat[, cc]   <- fx_returns[[cc]][match(all_dates, names(fx_returns[[cc]]))]
     rate_mat[, cc] <- rate_diffs[[cc]][match(all_dates, names(rate_diffs[[cc]]))]
   }
-  
+
   pos_mat <- matrix(0, T, length(countries), dimnames = list(all_dates, countries))
-  
+
   for (t in 2:T) {
     prob_yesterday <- unwind_mat[t - 1, ]
     if (any(is.na(prob_yesterday))) next
-    
+
     ranked           <- order(prob_yesterday)
     long_candidates  <- ranked[prob_yesterday[ranked] < (1 - prob_threshold)]
     short_candidates <- ranked[prob_yesterday[ranked] >       prob_threshold]
-    
+
     n_l <- min(n_long,  length(long_candidates))
     n_s <- min(n_short, length(short_candidates))
-    
+
     if (n_l > 0) pos_mat[t, long_candidates[1:n_l]]  <-  1 / n_l
     if (n_s > 0) pos_mat[t, short_candidates[(length(short_candidates) - n_s + 1):
                                                length(short_candidates)]] <- -1 / n_s
   }
-  
+
   # Long foreign ccy profits when it appreciates (FX rate falls) -> -fx_mat
   carry_pnl_mat <- pos_mat *  rate_mat
   fx_pnl_mat    <- pos_mat * (-fx_mat)
   total_pnl     <- rowSums(carry_pnl_mat + fx_pnl_mat, na.rm = TRUE)
-  
+
   list(
     positions  = as.data.frame(pos_mat),
     carry_pnl  = as.data.frame(carry_pnl_mat),
@@ -428,7 +428,7 @@ build_signal <- function(hmm_results, fx_returns, rate_diffs,
 # =============================================================================
 
 evaluate_strategy <- function(daily_ret, ann = 252) {
-  
+
   r        <- daily_ret[is.finite(daily_ret) & !is.na(daily_ret)]
   ret_ann  <- mean(r) * ann
   vol_ann  <- sd(r) * sqrt(ann)
@@ -439,7 +439,7 @@ evaluate_strategy <- function(daily_ret, ann = 252) {
   calmar   <- ret_ann / abs(max_dd)
   win_rate <- mean(r > 0)
   skew     <- mean(((r - mean(r)) / sd(r))^3)
-  
+
   cat("=========================================\n")
   cat(sprintf("  Annualised Return  : %7.2f%%\n", ret_ann  * 100))
   cat(sprintf("  Annualised Vol     : %7.2f%%\n", vol_ann  * 100))
@@ -449,7 +449,7 @@ evaluate_strategy <- function(daily_ret, ann = 252) {
   cat(sprintf("  Win Rate           : %7.2f%%\n", win_rate * 100))
   cat(sprintf("  Return Skewness    : %7.3f\n",   skew))
   cat("=========================================\n")
-  
+
   invisible(list(ret_ann = ret_ann, vol_ann = vol_ann, sharpe = sharpe,
                  max_dd = max_dd, calmar = calmar, win_rate = win_rate,
                  skew = skew))
@@ -461,7 +461,7 @@ evaluate_strategy <- function(daily_ret, ann = 252) {
 # =============================================================================
 
 summarise_states <- function(hmm_results) {
-  
+
   cat("\n=== STATE SUMMARY ===\n")
   for (cc in names(hmm_results)) {
     r  <- hmm_results[[cc]]
@@ -469,7 +469,7 @@ summarise_states <- function(hmm_results) {
     x  <- r$model$x
     N  <- nrow(Mu)
     u  <- r$unwind_state
-    
+
     cat(sprintf("\n%s (unwind state = %d)\n", cc, u))
     cat(sprintf("  %-8s  %9s  %10s  %9s\n", "State", "d_y2y", "d_spread", "fx_ret"))
     for (s in seq_len(N)) {
@@ -477,7 +477,7 @@ summarise_states <- function(hmm_results) {
       cat(sprintf("  State %d   %9.5f  %10.5f  %9.5f%s\n",
                   s, Mu[s, 1], Mu[s, 2], Mu[s, 3], marker))
     }
-    
+
     cat("  Transition into unwind state:\n")
     for (i in seq_len(N)) {
       if (i == u) next
@@ -493,14 +493,14 @@ summarise_states <- function(hmm_results) {
 # =============================================================================
 
 plot_results <- function(signal, hmm_results) {
-  
+
   countries <- names(hmm_results)
   dates     <- signal$dates
-  
+
   old_par <- par(mfrow = c(ceiling((length(countries) + 1) / 2), 2),
                  mar   = c(2, 3, 2, 1))
   on.exit(par(old_par))
-  
+
   for (cc in countries) {
     r   <- hmm_results[[cc]]
     idx <- match(as.character(dates), r$dates)
@@ -510,7 +510,7 @@ plot_results <- function(signal, hmm_results) {
     abline(h = 0.6, lty = 2, col = "grey50")
     grid()
   }
-  
+
   dev.new()
   cum_ret <- cumprod(1 + ifelse(is.na(signal$total_pnl), 0, signal$total_pnl))
   plot(dates, cum_ret, type = "l", lwd = 2, col = "#2166AC",
@@ -525,7 +525,7 @@ plot_results <- function(signal, hmm_results) {
 # SECTION 11: USAGE
 # =============================================================================
 #
-# Yields CSV needs columns: date, y2y, y10y  (y3m no longer required)
+# Yields CSV needs columns: date, X2Y, X10Y  (y3m no longer required)
 # FX CSV needs columns:     date, rate
 # TED CSV:                  date, ted
 # VIX CSV:                  date, vix
