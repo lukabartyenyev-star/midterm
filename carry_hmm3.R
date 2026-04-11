@@ -394,7 +394,7 @@ fit_all_countries <- function(country_data, ted, vix,
 
 
 # =============================================================================
-# SECTION 7: SIGNAL CONSTRUCTION
+# SECTION 7: SIGNAL CONSTRUCTION ## OLD, WAS TRYING BACKTESTING
 # =============================================================================
 
 #' Build daily carry trade signal from regime probabilities
@@ -465,7 +465,7 @@ build_signal <- function(hmm_results, fx_returns, rate_diffs,
 
 
 # =============================================================================
-# SECTION 8: PERFORMANCE EVALUATION
+# SECTION 8: PERFORMANCE EVALUATION ## OLD, WAS FOR BACKTEST
 # =============================================================================
 
 evaluate_strategy <- function(daily_ret, ann = 252) {
