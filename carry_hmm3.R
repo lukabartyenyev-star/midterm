@@ -184,7 +184,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
     
     # Backward pass
     beta     <- matrix(0, T, N)
-    beta[T,] <- 1 / sc[T]
+    beta[T,] <- 1 #Changed from beta[T,] <- 1 / sc[T]
     for (t in (T-1):1)
       for (i in seq_len(N))
         beta[t, i] <- sum(A[i,, t] * B[t+1,] * beta[t+1,]) / sc[t]
@@ -260,8 +260,8 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
     for (i in seq_len(N)) {
       w  <- Gamma[, i]; ws <- sum(w)
       if (ws < 1e-10) next
-      Mu[i,]   <- colSums(X[1:(T-1),, drop=FALSE] * w) / ws
-      d        <- sweep(X[1:(T-1),, drop=FALSE], 2, Mu[i,])
+      Mu[i,]   <- colSums(X[1:(T),, drop=FALSE] * w) / ws #T-1 change to T
+      d        <- sweep(X[1:(T),, drop=FALSE], 2, Mu[i,]) #T-1 change to T
       Cov[,,i] <- (t(d * w) %*% d) / ws + diag(1e-4, p)
     }
     
