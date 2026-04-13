@@ -28,7 +28,8 @@ library(mvtnorm)
 
 prepare_country <- function(yields, fx) {
   
-  df <- merge(yields, fx, by = "date", sort = TRUE)
+  df <- merge(yields, fx, by = "date")%>%
+    mutate(date = as.Date(date,format="%Y-%m-%d"))
   
   # Forward-fill FX rate across gaps before computing returns
   for (i in seq(2, nrow(df)))
@@ -38,8 +39,6 @@ prepare_country <- function(yields, fx) {
   df$d_y2y     <- c(NA, diff(df$X2Y))
   df$d_spread  <- c(NA, diff(spread))
   df$fx_return <- c(NA, diff(log(df$rate)))
-  
-  df <- df[complete.cases(df[, c("d_y2y", "d_spread", "fx_return")]), ]
   
   df[, c("date", "d_y2y", "d_spread", "fx_return")]
 }
@@ -53,21 +52,17 @@ prepare_country <- function(yields, fx) {
 #'
 #' @return Matrix (T x 2), standardised, columns: ted, vix
 
-prepare_covariates <- function(ted, vix, dates) {
+prepare_covariates <- function(ted, vix, dates,lagged=TRUE) {
   
-  dates     <- as.character(dates)
-  ted$date  <- as.character(ted$date)
-  vix$date  <- as.character(vix$date)
+  y_df<-merge(ted,vix,by="date")%>%
+    mutate(date = as.Date(date,format="%Y-%m-%d"))%>%
+    select(-US0003M.Index,-GB3.Govt)%>%
+    mutate(ted_lag = lag(ted),
+           vix_lag = lag(vix))
   
-  ted_vals  <- ted$ted[match(dates, ted$date)]
-  vix_vals  <- vix$vix[match(dates, vix$date)]
-  
-  Z <- cbind(
-    ted = (ted_vals - mean(ted_vals, na.rm = TRUE)) / sd(ted_vals, na.rm = TRUE),
-    vix = (vix_vals - mean(vix_vals, na.rm = TRUE)) / sd(vix_vals, na.rm = TRUE)
-  )
-  
-  Z
+  y<- as.matrix(y_df[,c(-1,-4,-5)])
+  y_lag<- as.matrix(y_df[,-1:-3])
+  return(ifelse(lagged,y_lag,y))
 }
 
 
@@ -117,6 +112,45 @@ prepare_covariates <- function(ted, vix, dates) {
   -total
 }
 
+#joint most likely path calculation
+viterbi <- function(B, A, Pi) {
+  T      <- nrow(B); N <- ncol(B)
+  delta  <- matrix(-Inf, T, N)
+  psi    <- matrix(0L, T, N)
+  
+  delta[1, ] <- log(Pi) + log(B[1, ])
+  
+  for (t in 2:T) {
+    for (j in seq_len(N)) {
+      vals       <- delta[t-1, ] + log(A[, j, t])
+      psi[t, j]  <- which.max(vals)
+      delta[t, j] <- max(vals) + log(B[t, j])
+    }
+  }
+  
+  # Decode path
+  path    <- integer(T)
+  path[T] <- which.max(delta[T, ])
+  for (t in (T-1):1) path[t] <- psi[t+1, path[t+1]]
+  
+  # Extract log-probability of the decoded path at each t
+  path_log_probs <- delta[cbind(seq_len(T), path)]
+  
+  # Normalise across states at each t to get P(s_t = path[t] | Viterbi context)
+  # This is exp(delta[t, path[t]]) / sum(exp(delta[t, ]))
+  log_denom      <- apply(delta, 1, function(row) {
+    m <- max(row); m + log(sum(exp(row - m)))   # log-sum-exp
+  })
+  path_probs     <- exp(path_log_probs - log_denom)
+  
+  list(
+    path            = path,
+    path_log_probs  = path_log_probs,   # log joint prob of best path through t
+    path_probs      = path_probs,       # normalised: share of total prob mass on best path
+    delta           = delta             # full delta matrix if needed
+  )
+}
+
 
 # =============================================================================
 # SECTION 3: FIT TVTP-HMM FOR ONE COUNTRY
@@ -133,7 +167,7 @@ prepare_covariates <- function(ted, vix, dates) {
 #'
 #' @return List: Mu (N x 3), Cov (3 x 3 x N), x (N x N x 3), Pi (N), LL
 
-fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
+fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compute_hessian = TRUE) {
   
   set.seed(seed)
   if (!is.matrix(X)) X <- as.matrix(X)
@@ -161,7 +195,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
   LL  <- numeric(cyc)
   
   for (cycle in seq_len(cyc)) {
-    
+    cat("processing cycle:",cycle)
     # Emission probabilities B: T x N
     B <- matrix(0, T, N)
     for (i in seq_len(N))
@@ -198,6 +232,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
       s <- sum(Xi[t,,]); if (s > 0) Xi[t,,] <- Xi[t,,] / s
     }
     Gamma <- apply(Xi, c(1, 2), sum)
+    Gamma_full <- rbind(Gamma, alpha[T, ])
     
     # M-step: Pi
     Pi <- pmax(Gamma[1,] / sum(Gamma[1,]), 1e-10)
@@ -258,7 +293,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
     
     # M-step: Mu and Cov
     for (i in seq_len(N)) {
-      w  <- Gamma[, i]; ws <- sum(w)
+      w  <- Gamma_full[, i]; ws <- sum(w)
       if (ws < 1e-10) next
       Mu[i,]   <- colSums(X[1:(T),, drop=FALSE] * w) / ws #T-1 change to T
       d        <- sweep(X[1:(T),, drop=FALSE], 2, Mu[i,]) #T-1 change to T
@@ -272,7 +307,84 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
     if (cycle > 2 && abs(lik - oldlik) < tol * abs(oldlik)) break
   }
   
-  list(Mu = Mu, Cov = Cov, x = x, Pi = Pi, LL = LL[seq_len(cycle)])
+  
+  
+  hess <- NULL
+  se   <- NULL
+  if (compute_hessian) {
+    # obj_free is no longer in scope after the loop, so rebuild it
+    Xi_final   <- Xi   # Xi from the last E-step
+    x_final    <- x
+    obj_final  <- function(par) {
+      x_try   <- array(0, dim = c(N, N, n_cov + 1))
+      par_idx <- 1
+      for (k in seq_len(n_cov + 1))
+        for (ij in free_idx) {
+          i_      <- ((ij - 1) %% N) + 1
+          j_      <- ((ij - 1) %/% N) + 1
+          x_try[i_, j_, k] <- par[par_idx]
+          par_idx <- par_idx + 1
+        }
+      .obj_tvtp(as.vector(x_try), T, Z, Xi_final, N)
+    }
+    
+    final_par <- numeric(length(free_idx) * (n_cov + 1))
+    par_idx   <- 1
+    for (k in seq_len(n_cov + 1))
+      for (ij in free_idx) {
+        i_ <- ((ij - 1) %% N) + 1
+        j_ <- ((ij - 1) %/% N) + 1
+        final_par[par_idx] <- x[i_, j_, k]
+        par_idx <- par_idx + 1
+      }
+    
+    hess <- numDeriv::hessian(obj_final, final_par)
+    vcov <- tryCatch(solve(hess), error = function(e) {
+      warning("Hessian singular — returning MASS::ginv instead"); MASS::ginv(hess)
+    })
+    se <- sqrt(pmax(diag(vcov), 0))   # pmax guards against tiny negatives
+  }
+  
+  
+  
+  if (!is.null(se)) {
+    param_labels <- character(length(free_idx) * (n_cov + 1))
+    cov_names    <- c("intercept", colnames(Z))
+    idx_lab      <- 1
+    for (k in seq_len(n_cov + 1))
+      for (ij in free_idx) {
+        i_ <- ((ij - 1) %% N) + 1
+        j_ <- ((ij - 1) %/% N) + 1
+        param_labels[idx_lab] <- paste0(cov_names[k], "_", i_, "->", j_)
+        idx_lab <- idx_lab + 1
+      }
+    wald_table <- data.frame(
+      param  = param_labels,
+      est    = final_par,
+      se     = se,
+      z      = final_par / se,
+      pval   = 2 * pnorm(abs(final_par / se), lower.tail = FALSE)
+    )
+  }
+  
+  
+  smoothed_probs <- Gamma_full   # T x N matrix, P(s_t = i | y_T, x_T)
+  state_sequence <- apply(smoothed_probs, 1, which.max) #most likely pointwise
+  viterbi_path <- viterbi(B, A, Pi)
+  
+  list(
+    Mu             = Mu,
+    Cov            = Cov,
+    x              = x,
+    Pi             = Pi,
+    LL             = LL[seq_len(cycle)],
+    smoothed_probs = smoothed_probs,    # T x N
+    state_sequence = state_sequence,    # T-length pointwise MAP
+    viterbi_path   = viterbi_path,      # T-length Viterbi path
+    hessian        = hess,              # NULL unless compute_hessian = TRUE
+    vcov           = if (!is.null(hess)) vcov else NULL,
+    wald_table     = if (!is.null(se)) wald_table else NULL
+  )
 }
 
 
@@ -288,6 +400,8 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42) {
 #'
 #' @return List: states (integer T), prb (N x T)
 
+
+#redundant
 decode_country <- function(X, Z, model) {
   
   if (!is.matrix(X)) X <- as.matrix(X)
@@ -335,6 +449,8 @@ decode_country <- function(X, Z, model) {
 #' Unwind state = state with most negative mean FX return (col 3)
 #' Verify this manually via summarise_states() — override if needed.
 
+
+#redundant
 identify_unwind_state <- function(model) {
   which.min(model$Mu[, 3])
 }
