@@ -2,7 +2,8 @@
 # STEP 1 — Load the source file
 # =============================================================================
 
-source("C:/Users/WZHLUBD/Downloads/carry_hmm3.R")
+setwd("C:/Users/1/Downloads")
+source("Data Model/carry_hmm3.R")
 library(dplyr)
 
 
@@ -12,21 +13,21 @@ library(dplyr)
 # Yields CSV: date, X2Y, X10Y  (semicolon-separated, comma decimal)
 # FX CSV:     date, rate        (semicolon-separated, comma decimal)
 
-index_mapping <- read.csv("C:/Users/WZHLUBD/Downloads/mapping_index.csv", stringsAsFactors = FALSE, header = FALSE)
-fx_rates <- read.csv("C:/Users/WZHLUBD/Downloads/fx_rates.csv") %>%
+index_mapping <- read.csv("Data Model/mapping_index.csv", stringsAsFactors = FALSE, header = FALSE)
+fx_rates <- read.csv("Data Model/fx_rates.csv") %>%
   mutate(Date = as.Date(Date, format = "%d.%m.%Y"))%>%
   rename(date = Date)
 
 
-yields <- lapply(list.files("Yield data", full.names = TRUE), read.csv2)
-names(yields)<-gsub(list.files("Yield data", full.names = F)     , pattern = "_wide.csv", replacement = "")# msp this from V2 in in
+yields <- lapply(list.files("Data Model/Yield data", full.names = TRUE), read.csv2)
+names(yields)<-gsub(list.files("Data Model/Yield data", full.names = F)     , pattern = "_wide.csv", replacement = "")# msp this from V2 in in
 names(yields) <- index_mapping$V3[match(names(yields), index_mapping$V2)]
 
 yields <- lapply(yields, function(df) {
   df %>%
     filter(type == "Mid Yield") %>%
     mutate(date = as.Date(date),
-           across(c(-date, -type), ~ ifelse(abs(.x) < 0.00001, NA, .x)))
+           across(c(-date, -type), ~ ifelse(abs(.x) < 0.00001, NA, .x)))%>%filter(date > as.Date("2006-01-03")) #consider uniform date
 })
 
 View(prepare_country)
@@ -35,31 +36,326 @@ country_data<-lapply(index_mapping$V3,function(cc){
   fx     <- fx_rates[,c("date",cc)]%>%
     rename(rate = cc)
   
-  prepare_country(term_str,fx)%>%
-    filter(date > as.Date("2002-01-03"))
+  prepare_country(term_str,fx)
   }
   
 )
 
 
 names(country_data)<-paste0(index_mapping$V3," ",index_mapping$V2)
-names(country_data)[13]
+head(country_data[[1]])
 
 View(country_data)
 
 # Sanity check — should show date, d_y2y, d_spread, fx_return, no NAs
-lapply(country_data, function(cd) {
+
+lapply(yields, function(cd) {
   data.frame(
     rows        = nrow(cd),
     from        = min(cd$date),
     to          = max(cd$date),
-    na_d_y2y    = sum(is.na(cd$d_y2y)),
-    na_d_spread = sum(is.na(cd$d_spread)),
-    na_fx       = sum(is.na(cd$fx_return))
+    na_y2y    = sum(is.na(cd$X2Y)),
+    na_we_are_done = sum(
+     !(
+       (
+         (!is.na(cd$X3Y) | !is.na(cd$X4Y)) &
+           (!is.na(cd$X9M) | !is.na(cd$X1Y))
+       ) |
+         !is.na(cd$X2Y)
+     )
+   ),
+   na_y10y    = sum(is.na(cd$X10Y)),
+   na_we_are_done_10 = sum(
+     !(
+       (
+         (!is.na(cd$X8Y) | !is.na(cd$X9Y)) &
+           (!is.na(cd$X12M) | !is.na(cd$X15Y))
+       ) |
+         !is.na(cd$X10Y)
+     )
+   )
   )
 })
 
 
+safe_na <- function(df, col) {
+  if (col %in% names(df)) {
+    is.na(df[[col]])
+  } else {
+    rep(TRUE, nrow(df))  # treat missing column as all NA
+  }
+}
+DQI <- lapply(yields, function(cd) {
+  
+  na_3y  <- safe_na(cd, "X3Y")
+  na_4y  <- safe_na(cd, "X4Y")
+  na_6m  <- safe_na(cd, "X6M")
+  na_9m  <- safe_na(cd, "X9M")
+  na_1y  <- safe_na(cd, "X1Y")
+  na_2y  <- safe_na(cd, "X2Y")
+  
+  na_8y  <- safe_na(cd, "X8Y")
+  na_9y  <- safe_na(cd, "X9Y")
+  na_12y <- safe_na(cd, "X12Y")
+  na_15y <- safe_na(cd, "X15Y")
+  na_10y <- safe_na(cd, "X10Y")
+  
+  x <- data.frame(
+    date = cd$date,
+    
+    na_y2y = na_2y,
+    
+    na_we_are_done =
+      !(
+        (
+          (!na_3y | !na_4y) &
+            (!na_9m | !na_1y)
+        ) |
+          !na_2y
+      ),
+    
+    na_y10y = na_10y,
+    
+    na_we_are_done_10 =
+      !(
+        (
+          (!na_9y) &
+            (!na_12y)
+        ) |
+          !na_10y
+      )
+  )
+  
+  merge(cd, x, by = "date") %>%
+    dplyr::filter(na_we_are_done)
+})
+
+
+DQI_fitted <- lapply(yields_filled, function(cd) {
+  
+  na_3y  <- safe_na(cd, "X3Y")
+  na_4y  <- safe_na(cd, "X4Y")
+  na_6m  <- safe_na(cd, "X6M")
+  na_9m  <- safe_na(cd, "X9M")
+  na_1y  <- safe_na(cd, "X1Y")
+  na_2y  <- safe_na(cd, "X2Y")
+  
+  na_8y  <- safe_na(cd, "X8Y")
+  na_9y  <- safe_na(cd, "X9Y")
+  na_12y <- safe_na(cd, "X12Y")
+  na_15y <- safe_na(cd, "X15Y")
+  na_10y <- safe_na(cd, "X10Y")
+  
+  x <- data.frame(
+    date = cd$date,
+    
+    na_y2y = na_2y,
+    
+    na_we_are_done =
+      !(
+        (
+          (!na_3y | !na_4y) &
+            (!na_9m | !na_1y)
+        ) |
+          !na_2y
+      ),
+    
+    na_y10y = na_10y,
+    
+    na_we_are_done_10 =
+      !(
+        (
+          (!na_9y) &
+            (!na_12y)
+        ) |
+          !na_10y
+      )
+  )
+  
+  merge(cd, x, by = "date") %>%
+    dplyr::filter(na_we_are_done)
+})
+lapply(DQI_fitted,nrow)
+lapply(DQI,nrow)
+
+
+lapply(DQI,function(x)diff(x[,"date"]))
+
+View(DQI$NZD)
+all_cols <- unique(unlist(lapply(yields, names)))
+
+
+
+
+
+library(tidyverse)
+library(zoo)
+library(YieldCurve)
+
+
+tenor_to_years <- function(t) {
+  case_when(
+    grepl("W$", t) ~ as.numeric(sub("W","",t)) / 52,
+    grepl("M$", t) ~ as.numeric(sub("M","",t)) / 12,
+    grepl("Y$", t) ~ as.numeric(sub("Y","",t)),
+    TRUE           ~ NA_real_
+  )
+}
+
+get_tenor_cols <- function(df) names(df)[grepl("^X", names(df))]
+col_to_tenor   <- function(col) sub("^X", "", col)
+
+roll_col <- function(vec, max_days = 3) {
+  filled <- zoo::na.locf(vec, na.rm = FALSE, maxgap = max_days)
+  zoo::na.locf(filled, fromLast = TRUE, na.rm = FALSE, maxgap = max_days)
+}
+
+# ── NS fit for one row, returns fitted value at target maturity ───────────────
+fit_ns_at <- function(named_vec, target_years, min_obs = 4) {
+  x   <- tenor_to_years(names(named_vec))
+  y   <- as.numeric(named_vec)
+  obs <- !is.na(y) & !is.na(x)
+  
+  if (sum(obs) < min_obs)      return(NA_real_)
+  if (!any(x[obs] <= 2))       return(NA_real_)  # need short end to identify beta1
+  if (!any(x[obs] >= 5))       return(NA_real_)  # need long end to identify beta0
+  
+  tryCatch({
+    fit    <- Nelson.Siegel(rate = y[obs], maturity = x[obs])
+    fitted <- NSrates(fit, maturity = target_years)
+    as.numeric(fitted[1, ])
+  }, error = function(e) rep(NA_real_, length(target_years)))
+}
+
+# ── Main fill procedure ───────────────────────────────────────────────────────
+fill_targets <- function(df, target_cols, max_roll = 3) {
+  
+  tenor_cols <- get_tenor_cols(df)
+  types      <- unique(df$type)
+  
+  result <- map(types, function(tp) {
+    sub_df <- df %>% filter(type == tp) %>% arrange(date)
+    
+    # Pre-compute target maturities in years (needed for NS)
+    targets_here  <- intersect(target_cols, names(sub_df))
+    target_years  <- tenor_to_years(col_to_tenor(targets_here))
+    avail_cols    <- intersect(tenor_cols, names(sub_df))
+    
+    # ── Step 1: roll each target up to max_roll days ──────────────────────
+    for (tc in targets_here) {
+      sub_df[[tc]] <- roll_col(sub_df[[tc]], max_days = max_roll)
+    }
+    
+    # ── Step 2: NS interpolation using currently available (unrolled) tenors
+    still_na <- sapply(targets_here, function(tc) is.na(sub_df[[tc]]))
+    # still_na is matrix: rows = observations, cols = targets
+    if (!is.matrix(still_na)) still_na <- matrix(still_na, ncol = length(targets_here),
+                                                 dimnames = list(NULL, targets_here))
+    
+    rows_needing_fill <- which(apply(still_na, 1, any))
+    
+    for (i in rows_needing_fill) {
+      row_vals <- setNames(as.numeric(sub_df[i, avail_cols]),
+                           col_to_tenor(avail_cols))
+      fitted   <- fit_ns_at(row_vals, target_years)
+      
+      for (j in seq_along(targets_here)) {
+        tc <- targets_here[j]
+        if (still_na[i, tc] && !is.na(fitted[j])) {
+          sub_df[i, tc] <- fitted[j]
+        }
+      }
+    }
+    
+    # ── Step 3: still NA — roll all other tenor cols, then retry NS ───────
+    still_na2 <- sapply(targets_here, function(tc) is.na(sub_df[[tc]]))
+    if (!is.matrix(still_na2)) still_na2 <- matrix(still_na2, ncol = length(targets_here),
+                                                   dimnames = list(NULL, targets_here))
+    
+    rows_still_na <- which(apply(still_na2, 1, any))
+    
+    if (length(rows_still_na) > 0) {
+      # Roll all non-target tenor columns
+      non_target_cols <- setdiff(avail_cols, targets_here)
+      temp_df <- sub_df
+      for (nc in non_target_cols) {
+        temp_df[[nc]] <- roll_col(temp_df[[nc]], max_days = max_roll)
+      }
+      
+      for (i in rows_still_na) {
+        row_vals <- setNames(as.numeric(temp_df[i, avail_cols]),
+                             col_to_tenor(avail_cols))
+        fitted   <- fit_ns_at(row_vals, target_years)
+        
+        for (j in seq_along(targets_here)) {
+          tc <- targets_here[j]
+          if (still_na2[i, tc] && !is.na(fitted[j])) {
+            sub_df[i, tc] <- fitted[j]
+          }
+        }
+      }
+    }
+    
+    # ── Report residual NAs ───────────────────────────────────────────────
+    for (tc in targets_here) {
+      residual <- sum(is.na(sub_df[[tc]]))
+      if (residual > 0)
+        cat(sprintf("  [%s | %s | %s] %d NAs remain after all 3 steps\n",
+                    tp, tc, unique(sub_df$curve), residual))
+    }
+    
+    sub_df
+  })
+  
+  bind_rows(result) %>% arrange(date, type)
+}
+
+# ── Compute emissions ─────────────────────────────────────────────────────────
+compute_emissions <- function(df, short_col = "X2Y", long_col = "X10Y") {
+  df %>%
+    filter(type == "Mid Yield") %>%
+    arrange(date) %>%
+    mutate(
+      slope   = .data[[long_col]] - .data[[short_col]],
+      d_short = .data[[short_col]] - lag(.data[[short_col]]),
+      d_slope = slope - lag(slope)
+    ) %>%
+    select(date, short = all_of(short_col), long = all_of(long_col),
+           slope, d_short, d_slope)
+}
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+target_cols <- c("X2Y", "X10Y")
+
+yields_filled <- imap(yields, function(df, ccy) {
+  cat("Processing:", ccy, "\n")
+  fill_targets(df, target_cols, max_roll = 3)
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+View(yields$MYR)
 # Confirm columns are numeric, not character
 str(country_data[["GBP"]])
 
