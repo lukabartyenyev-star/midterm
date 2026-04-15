@@ -2,7 +2,8 @@
 # STEP 1 — Load the source file
 # =============================================================================
 
-source("carry_hmm3.R")
+source("C:/Users/WZHLUBD/Downloads/carry_hmm3.R")
+library(dplyr)
 
 
 # =============================================================================
@@ -11,13 +12,40 @@ source("carry_hmm3.R")
 # Yields CSV: date, X2Y, X10Y  (semicolon-separated, comma decimal)
 # FX CSV:     date, rate        (semicolon-separated, comma decimal)
 
-countries <- c("GBP", "JPY", "CAD", "SEK")
+index_mapping <- read.csv("C:/Users/WZHLUBD/Downloads/mapping_index.csv", stringsAsFactors = FALSE, header = FALSE)
+fx_rates <- read.csv("C:/Users/WZHLUBD/Downloads/fx_rates.csv") %>%
+  mutate(Date = as.Date(Date, format = "%d.%m.%Y"))%>%
+  rename(date = Date)
 
-country_data <- lapply(setNames(countries, countries), function(cc) {
-  yields <- read.csv2(paste0("curves_data_csv/curve_", cc, ".csv"))
-  fx     <- read.csv2(paste0("fx_data_csv/fx_",        cc, ".csv"))
-  prepare_country(yields, fx)
+
+yields <- lapply(list.files("Yield data", full.names = TRUE), read.csv2)
+names(yields)<-gsub(list.files("Yield data", full.names = F)     , pattern = "_wide.csv", replacement = "")# msp this from V2 in in
+names(yields) <- index_mapping$V3[match(names(yields), index_mapping$V2)]
+
+yields <- lapply(yields, function(df) {
+  df %>%
+    filter(type == "Mid Yield") %>%
+    mutate(date = as.Date(date),
+           across(c(-date, -type), ~ ifelse(abs(.x) < 0.00001, NA, .x)))
 })
+
+View(prepare_country)
+country_data<-lapply(index_mapping$V3,function(cc){
+  term_str <- yields[[cc]]
+  fx     <- fx_rates[,c("date",cc)]%>%
+    rename(rate = cc)
+  
+  prepare_country(term_str,fx)%>%
+    filter(date > as.Date("2002-01-03"))
+  }
+  
+)
+
+
+names(country_data)<-paste0(index_mapping$V3," ",index_mapping$V2)
+names(country_data)[13]
+
+View(country_data)
 
 # Sanity check — should show date, d_y2y, d_spread, fx_return, no NAs
 lapply(country_data, function(cd) {
@@ -30,6 +58,7 @@ lapply(country_data, function(cd) {
     na_fx       = sum(is.na(cd$fx_return))
   )
 })
+
 
 # Confirm columns are numeric, not character
 str(country_data[["GBP"]])
@@ -63,9 +92,102 @@ country_data <- lapply(country_data, function(cd) {
 # TED CSV: date, ted  (other columns are ignored)
 # VIX CSV: date, vix  (other columns are ignored)
 
-ted <- read.csv2("TED.csv")
-vix <- read.csv2("VIX.csv")
+library(dplyr)
 
+do_country <- function(yields, fx) {
+  
+  df <- merge(yields, fx, by = "date", sort = TRUE)
+  
+  # Forward-fill FX rate across gaps before computing returns
+  for (i in seq(2, nrow(df)))
+    if (is.na(df$rate[i])) df$rate[i] <- df$rate[i - 1]
+  
+  spread       <- df$X10Y - df$X2Y
+  df$d_y2y     <- c(NA, diff(df$X2Y))
+  df$d_spread  <- c(NA, diff(spread))
+  df$fx_return <- c(NA, diff(log(df$rate)))
+
+  df[, c("date", "d_y2y", "d_spread", "fx_return")]
+}
+
+
+
+
+
+curves<-list.files("midterm/curves_data_csv")
+forex<-list.files("midterm/fx_data_csv")
+
+
+yield <-
+
+
+
+ted <- read.csv2("C:/Users/1/Downloads/TED.csv")
+vix <- read.csv2("C:/Users/1/Downloads/VIX.csv")
+
+critical<- as.Date("2002-04-10")
+
+
+
+test<-do_country(yield,fx)%>%
+  mutate(date = as.Date(date,format="%Y-%m-%d"))%>%
+  filter(date>critical)
+
+
+X<- as.matrix(test[-1])
+
+y<-merge(ted,vix,by="date")%>%
+  mutate(date = as.Date(date,format="%Y-%m-%d"))%>%
+  select(-US0003M.Index,-GB3.Govt)%>%
+  filter(date %in% test$date)
+
+y_df<-merge(ted,vix,by="date")%>%
+  mutate(date = as.Date(date,format="%Y-%m-%d"))%>%
+  select(-US0003M.Index,-GB3.Govt)%>%
+  mutate(ted_lag = lag(ted),
+         vix_lag = lag(vix))%>%
+  filter(date %in% test$date)
+
+y<- as.matrix(y_df[,c(-1,-4,-5)])
+y_lag<- as.matrix(y_df[,-1:-3])
+View(y_lag)
+
+
+
+#' Fit TVTP-HMM to one country's data
+#'
+#' @param X     Matrix (T x 3): d_y2y, d_spread, fx_return
+#' @param Z     Matrix (T x 2): standardised TED, VIX
+#' @param N     Number of hidden states
+#' @param cyc   Maximum EM iterations
+#' @param tol   Convergence tolerance on log-likelihood change
+#' @param seed  RNG seed
+#'
+#' @return List: Mu (N x 3), Cov (3 x 3 x N), x (N x N x 3), Pi (N), LL
+
+
+check1<-fit_country_hmm(X,y)
+
+reg_1<-1/(1+exp(rep(check1$x[1,2,1],nrow(y)) + check1$x[1,2,2]*y[,1] + check1$x[1,2,3]**y[,2]))
+
+beta_df <- data.frame(
+  transition  = c("1->2", "2->1"),
+  intercept   = c(check1$x[1, 2, 1], check1$x[2, 1, 1]),
+  beta_TED    = c(check1$x[1, 2, 2], check1$x[2, 1, 2]),
+  beta_VIX    = c(check1$x[1, 2, 3], check1$x[2, 1, 3])
+)
+par(mfrow=c(2,1))
+i<-2
+plot(y_df$date,1/(1+exp(-rep(beta_df$intercept[i],nrow(y)) - beta_df$beta_TED[i]*y[,1] - beta_df$beta_VIX[i]*y[,2])),
+     main=beta_df$transition[i])
+
+cat(beta_df$transition[i])
+
+reg_2<-check1$x[2,1,]
+
+check1$Cov
+
+View(check1$x)
 
 # =============================================================================
 # STEP 4 — Fit models
