@@ -26,21 +26,24 @@ library(mvtnorm)
 #'   d_spread = diff(y10y - y2y)   (change in 10y-2y spread)
 #'   fx_return = log(FX_t/FX_{t-1}) (positive = local ccy depreciated)
 
-prepare_country <- function(yields, fx) {
+prepare_covariates <- function(ted, vix, lagged = TRUE) {
   
-  df <- merge(yields, fx, by = "date")%>%
-    mutate(date = as.Date(date,format="%Y-%m-%d"))
+  y_df <- merge(ted, vix, by = "date") %>%
+    mutate(date = as.Date(date, format = "%Y-%m-%d")) %>%
+    arrange(date) %>%
+    mutate(
+      ted_lag = lag(ted),
+      vix_lag = lag(vix)
+    )
   
-  # Forward-fill FX rate across gaps before computing returns
-  for (i in seq(2, nrow(df)))
-    if (is.na(df$rate[i])) df$rate[i] <- df$rate[i - 1]
+  if (lagged) {
+    out <- y_df[, c("date", "ted_lag", "vix_lag")]
+    colnames(out) <- c("date", "ted", "vix")
+  } else {
+    out <- y_df[, c("date", "ted", "vix")]
+  }
   
-  spread       <- df$X10Y - df$X2Y
-  df$d_y2y     <- c(NA, diff(df$X2Y))
-  df$d_spread  <- c(NA, diff(spread))
-  df$fx_return <- c(NA, diff(log(df$rate)))
-  
-  df[, c("date", "d_y2y", "d_spread", "fx_return")]
+  out
 }
 
 
@@ -52,18 +55,6 @@ prepare_country <- function(yields, fx) {
 #'
 #' @return Matrix (T x 2), standardised, columns: ted, vix
 
-prepare_covariates <- function(ted, vix, dates,lagged=TRUE) {
-  
-  y_df<-merge(ted,vix,by="date")%>%
-    mutate(date = as.Date(date,format="%Y-%m-%d"))%>%
-    select(-US0003M.Index,-GB3.Govt)%>%
-    mutate(ted_lag = lag(ted),
-           vix_lag = lag(vix))
-  
-  y<- as.matrix(y_df[,c(-1,-4,-5)])
-  y_lag<- as.matrix(y_df[,-1:-3])
-  return(ifelse(lagged,y_lag,y))
-}
 
 
 # =============================================================================
@@ -402,44 +393,6 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
 
 
 #redundant
-decode_country <- function(X, Z, model) {
-  
-  if (!is.matrix(X)) X <- as.matrix(X)
-  T <- nrow(X)
-  N <- nrow(model$Mu)
-  A <- .compute_A(model$x, Z, N)
-  
-  B <- matrix(0, N, T)
-  for (i in seq_len(N))
-    B[i,] <- dmvnorm(X, mean = model$Mu[i,], sigma = model$Cov[,,i])
-  B[B == 0] <- 1e-300
-  
-  delta <- matrix(-Inf, N, T)
-  psi   <- matrix(0L,   N, T)
-  prb   <- matrix(0,    N, T)
-  sc    <- numeric(T)
-  
-  delta[, 1] <- log(model$Pi) + log(B[, 1])
-  prb[, 1]   <- model$Pi * B[, 1]
-  sc[1]      <- sum(prb[, 1]); prb[, 1] <- prb[, 1] / sc[1]
-  
-  for (t in 2:T) {
-    for (j in seq_len(N)) {
-      v           <- delta[, t-1] + log(pmax(A[, j, t], 1e-300))
-      delta[j, t] <- max(v) + log(B[j, t])
-      psi[j, t]   <- which.max(v)
-      prb[j, t]   <- max(prb[, t-1] * A[, j, t]) * B[j, t]
-    }
-    sc[t] <- sum(prb[, t])
-    if (sc[t] > 0) prb[, t] <- prb[, t] / sc[t]
-  }
-  
-  states    <- integer(T)
-  states[T] <- which.max(delta[, T])
-  for (t in (T-1):1) states[t] <- psi[states[t+1], t]
-  
-  list(states = states, prb = prb)
-}
 
 
 # =============================================================================
@@ -452,7 +405,7 @@ decode_country <- function(X, Z, model) {
 
 #redundant
 identify_unwind_state <- function(model) {
-  which.min(model$Mu[, 3])
+  which.max(model$Cov[3,3])
 }
 
 
@@ -468,7 +421,10 @@ identify_unwind_state <- function(model) {
 #' @param tol           Convergence tolerance
 
 fit_all_countries <- function(country_data, ted, vix,
-                              N = 2, cyc = 100, tol = 1e-4) {
+                              N = 2, cyc = 100, tol = 1e-4, lagged = TRUE) {
+  
+  # Build global Z once
+  Z_full <- prepare_covariates(ted, vix, lagged = lagged)
   
   results <- vector("list", length(country_data))
   names(results) <- names(country_data)
@@ -476,37 +432,39 @@ fit_all_countries <- function(country_data, ted, vix,
   for (cc in names(country_data)) {
     cat(sprintf("\n--- Fitting %s ---\n", cc))
     
-    cd    <- country_data[[cc]]
-    dates <- as.character(cd$date)
+    cd <- country_data[[cc]]
+    cd$date <- as.Date(cd$date)
     
-    X <- as.matrix(cd[, c("d_y2y", "d_spread", "fx_return")])
-    Z <- prepare_covariates(ted, vix, dates)
+    # Slice Z to country's dates
+    merged <- merge(cd, Z_full, by = "date", sort = TRUE)
+    if (any(c(is.na(merged$ted),is.na(merged$vix)))) {
+      message(paste(cc,"Contains NAs in its covariates"))
+      next
+    }
     
-    valid <- complete.cases(Z)
-    X     <- X[valid, ]
-    Z     <- Z[valid, ]
-    dates <- dates[valid]
+    X <- as.matrix(merged[, c("d_y2y", "d_spread", "fx_return")])
+    Z <- as.matrix(merged[, c("ted", "vix")])
+    
+    cat(sprintf("  T = %d observations after alignment\n", nrow(X)))
     
     model   <- fit_country_hmm(X, Z, N = N, cyc = cyc, tol = tol)
-    decoded <- decode_country(X, Z, model)
     u_state <- identify_unwind_state(model)
     
     results[[cc]] <- list(
       model        = model,
-      decoded      = decoded,
       unwind_state = u_state,
-      unwind_prob  = decoded$prb[u_state, ],
-      dates        = dates
+      dates        = merged$date
     )
     
-    cat(sprintf("  Unwind state: %d  |  Mean unwind prob: %.3f\n",
-                u_state, mean(decoded$prb[u_state, ])))
+    cat(sprintf("  Unwind state: %d\n", u_state))
     cat(sprintf("  Unwind state means -> d_y2y: %.4f  d_spread: %.4f  fx_ret: %.5f\n",
                 model$Mu[u_state, 1], model$Mu[u_state, 2], model$Mu[u_state, 3]))
   }
   
   results
 }
+
+
 
 
 # =============================================================================
