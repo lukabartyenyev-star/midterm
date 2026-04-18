@@ -329,8 +329,54 @@ vix <- read.csv2("C:/Users/1/Downloads/VIX.csv")
 # =============================================================================
 
 result_good_run<-fit_all_countries(country_data,ted,vix)
+good_SAVE <- "C:/Users/1/Documents/GOODRES.rds"  # same folder as your other EWS files
+saveRDS(result_good_run,good_SAVE)
+processed_hmms<-readRDS(good_SAVE)
 
-View()
+View(processed_hmms)
+
+unwind_states<-unlist(lapply(processed_hmms,function(x){which.max(x$model$Cov[3,3,]) }))
+names(unwind_states)<-names(processed_hmms)
+
+
+transition_prob_betas<-lapply(processed_hmms,function(x){
+  tuple <- x$model$x
+  data.frame(
+    transition  = c("1->2", "2->1"),
+    intercept   = c(tuple[1, 2, 1], tuple[2, 1, 1]),
+    beta_TED    = c(tuple[1, 2, 2], tuple[2, 1, 2]),
+    beta_VIX    = c(tuple[1, 2, 3], tuple[2, 1, 3])
+    )
+})
+
+cov_matrices<-lapply(processed_hmms,function(x){
+  matr<-x$model$Cov
+  colnames(matr)<-rownames(matr)<-c("d_y2y", "d_spread", "fx_return")
+  matr
+  })
+Mus<-lapply(processed_hmms,function(x){
+  mus<-x$model$Mu
+  colnames(mus)<-c("d_y2y", "d_spread", "fx_return")
+  mus
+  })
+
+wald_tables<-lapply(processed_hmms,function(x){
+    x$model$wald_table
+  }
+)
+
+state_history<-lapply(processed_hmms,function(x){
+  data.frame(
+    dates=as.Date(x$date),
+    viterbi_path=x$model$viterbi_path$path,
+    viterbi_probs=x$model$viterbi_path$path_probs,
+    state_sequence=x$model$state_sequence,
+    smoothed_probs1=x$model$smoothed_probs[,1],
+    moothed_probs1=x$model$smoothed_probs[,2]
+    )
+  }
+)
+
 # =============================================================================
 # STEP 5 — Check state identification
 # =============================================================================
