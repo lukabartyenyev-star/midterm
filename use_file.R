@@ -4,8 +4,11 @@
 
 setwd("C:/Users/1/Downloads")
 source("C:/Users/1/Downloads/Data Model/carry_hmm3.R")
-library(dplyr)
 
+library(tidyverse)
+library(zoo)
+library(YieldCurve)
+library(xts)
 
 
 # =============================================================================
@@ -32,109 +35,6 @@ yields <- lapply(yields, function(df) {
 })
 
 
-# Sanity check — should show date, d_y2y, d_spread, fx_return, no NAs
-
-
-safe_na <- function(df, col) {
-  if (col %in% names(df)) {
-    is.na(df[[col]])
-  } else {
-    rep(TRUE, nrow(df))  # treat missing column as all NA
-  }
-}
-DQI <- lapply(yields, function(cd) {
-  
-  na_3y  <- safe_na(cd, "X3Y")
-  na_4y  <- safe_na(cd, "X4Y")
-  na_6m  <- safe_na(cd, "X6M")
-  na_9m  <- safe_na(cd, "X9M")
-  na_1y  <- safe_na(cd, "X1Y")
-  na_2y  <- safe_na(cd, "X2Y")
-  
-  na_8y  <- safe_na(cd, "X8Y")
-  na_9y  <- safe_na(cd, "X9Y")
-  na_12y <- safe_na(cd, "X12Y")
-  na_15y <- safe_na(cd, "X15Y")
-  na_10y <- safe_na(cd, "X10Y")
-  
-  x <- data.frame(
-    date = cd$date,
-    
-    na_y2y = na_2y,
-    
-    na_we_are_done =
-      !(
-        (
-          (!na_3y | !na_4y) &
-            (!na_9m | !na_1y)
-        ) |
-          !na_2y
-      ),
-    
-    na_y10y = na_10y,
-    
-    na_we_are_done_10 =
-      !(
-        (
-          (!na_9y) &
-            (!na_12y)
-        ) |
-          !na_10y
-      )
-  )
-  
-  merge(cd, x, by = "date") %>%
-    dplyr::filter(na_y2y)
-})
-DQI_fitted <- lapply(yields_filled, function(cd) {
-  
-  na_3y  <- safe_na(cd, "X3Y")
-  na_4y  <- safe_na(cd, "X4Y")
-  na_6m  <- safe_na(cd, "X6M")
-  na_9m  <- safe_na(cd, "X9M")
-  na_1y  <- safe_na(cd, "X1Y")
-  na_2y  <- safe_na(cd, "X2Y")
-  
-  na_8y  <- safe_na(cd, "X8Y")
-  na_9y  <- safe_na(cd, "X9Y")
-  na_12y <- safe_na(cd, "X12Y")
-  na_15y <- safe_na(cd, "X15Y")
-  na_10y <- safe_na(cd, "X10Y")
-  
-  x <- data.frame(
-    date = cd$date,
-    
-    na_y2y = na_2y,
-    
-    na_we_are_done =
-      !(
-        (
-          (!na_3y | !na_4y) &
-            (!na_9m | !na_1y)
-        ) |
-          !na_2y
-      ),
-    
-    na_y10y = na_10y,
-    
-    na_we_are_done_10 =
-      !(
-        (
-          (!na_9y) &
-            (!na_12y)
-        ) |
-          !na_10y
-      )
-  )
-  
-  merge(cd, x, by = "date") %>%
-    dplyr::filter(na_we_are_done)
-})
-
-
-library(tidyverse)
-library(zoo)
-library(YieldCurve)
 
 tenor_to_years <- function(t) {
   case_when(
@@ -147,7 +47,7 @@ tenor_to_years <- function(t) {
 
 get_tenor_cols <- function(df) names(df)[grepl("^X", names(df))]
 col_to_tenor   <- function(col) sub("^X", "", col)
-tenor_to_years(col_to_tenor(get_tenor_cols(yield_test)))
+
 
 
 roll_col <- function(vec, max_days = 3) {
@@ -156,7 +56,6 @@ roll_col <- function(vec, max_days = 3) {
 }
 
 # ── NS fit for one row, returns fitted value at target maturity ───────────────
-library(xts)
 
 fit_ns_at <- function(named_vec, target_years, min_obs = 4) {
   x   <- tenor_to_years(names(named_vec))
@@ -262,6 +161,112 @@ yields_filled <- imap(yields, function(df, ccy) {
   fill_targets(df, target_cols, max_roll = 3)
 })
 
+# Just a sanity check — should show date, d_y2y, d_spread, fx_return, no NAs
+
+
+safe_na <- function(df, col) {
+  if (col %in% names(df)) {
+    is.na(df[[col]])
+  } else {
+    rep(TRUE, nrow(df))  # treat missing column as all NA
+  }
+}
+DQI <- lapply(yields, function(cd) {
+  
+  na_3y  <- safe_na(cd, "X3Y")
+  na_4y  <- safe_na(cd, "X4Y")
+  na_6m  <- safe_na(cd, "X6M")
+  na_9m  <- safe_na(cd, "X9M")
+  na_1y  <- safe_na(cd, "X1Y")
+  na_2y  <- safe_na(cd, "X2Y")
+  
+  na_8y  <- safe_na(cd, "X8Y")
+  na_9y  <- safe_na(cd, "X9Y")
+  na_12y <- safe_na(cd, "X12Y")
+  na_15y <- safe_na(cd, "X15Y")
+  na_10y <- safe_na(cd, "X10Y")
+  
+  x <- data.frame(
+    date = cd$date,
+    
+    na_y2y = na_2y,
+    
+    na_we_are_done =
+      !(
+        (
+          (!na_3y | !na_4y) &
+            (!na_9m | !na_1y)
+        ) |
+          !na_2y
+      ),
+    
+    na_y10y = na_10y,
+    
+    na_we_are_done_10 =
+      !(
+        (
+          (!na_9y) &
+            (!na_12y)
+        ) |
+          !na_10y
+      )
+  )
+  
+  merge(cd, x, by = "date") %>%
+    dplyr::filter(na_y2y)
+})
+DQI_fitted <- lapply(yields_filled, function(cd) {
+  
+  na_3y  <- safe_na(cd, "X3Y")
+  na_4y  <- safe_na(cd, "X4Y")
+  na_6m  <- safe_na(cd, "X6M")
+  na_9m  <- safe_na(cd, "X9M")
+  na_1y  <- safe_na(cd, "X1Y")
+  na_2y  <- safe_na(cd, "X2Y")
+  
+  na_8y  <- safe_na(cd, "X8Y")
+  na_9y  <- safe_na(cd, "X9Y")
+  na_12y <- safe_na(cd, "X12Y")
+  na_15y <- safe_na(cd, "X15Y")
+  na_10y <- safe_na(cd, "X10Y")
+  
+  x <- data.frame(
+    date = cd$date,
+    
+    na_y2y = na_2y,
+    
+    na_we_are_done =
+      !(
+        (
+          (!na_3y | !na_4y) &
+            (!na_9m | !na_1y)
+        ) |
+          !na_2y
+      ),
+    
+    na_y10y = na_10y,
+    
+    na_we_are_done_10 =
+      !(
+        (
+          (!na_9y) &
+            (!na_12y)
+        ) |
+          !na_10y
+      )
+  )
+  
+  merge(cd, x, by = "date") %>%
+    dplyr::filter(na_we_are_done)
+})
+
+
+yields_filled_RDS <- "C:/Users/1/Documents/yields_filled.rds"  # same folder as your other EWS files
+yields_filled<-readRDS(yields_filled_RDS)
+
+
+
+
 good_list<-c("AUD", "CAD", "EUR", "JPY", "SEK", "GBP", "USD","NZD","NOK", "CHF", "CZK", "PLN","MXN","BRL")
 length(good_list)
 
@@ -283,21 +288,7 @@ country_data<-lapply(good_list,function(cc){
 }
 )
 
-
 names(country_data)<-good_list
-
-# Confirm columns are numeric, not character
-
-
-# Check for gaps in the time series
-lapply(country_data, function(cd) {
-  gaps <- diff(as.Date(cd$date))
-  data.frame(
-    max_gap_days  = max(gaps),
-    gaps_over_5d  = sum(gaps > 5),
-    gaps_over_20d = sum(gaps > 20)
-  )
-})
 
 # =============================================================================
 # STEP 3 — Load covariates
@@ -328,16 +319,45 @@ vix <- read.csv2("C:/Users/1/Downloads/VIX.csv")
 # STEP 4 — Fit models
 # =============================================================================
 
-result_good_run<-fit_all_countries(country_data,ted,vix)
-good_SAVE <- "C:/Users/1/Documents/GOODRES.rds"  # same folder as your other EWS files
-saveRDS(result_good_run,good_SAVE)
-processed_hmms<-readRDS(good_SAVE)
+result_good_run <- fit_all_countries(country_data, ted, vix, N = 2)
+result_good_run_3 <- fit_all_countries(country_data, ted, vix, N = 3)
 
-View(processed_hmms)
 
-unwind_states<-unlist(lapply(processed_hmms,function(x){which.max(x$model$Cov[3,3,]) }))
-names(unwind_states)<-names(processed_hmms)
+#fit_full     <- fit_all_countries(country_data, ted, vix, covariates = c("ted", "vix"))
+#fit_ted_only <- fit_all_countries(country_data, ted, vix, covariates = "ted")
+#fit_vix_only <- fit_all_countries(country_data, ted, vix, covariates = "vix")
+fit_const    <- fit_all_countries(country_data, ted, vix, covariates = character(0))
 
+
+
+ted_vix_2 <- "C:/Users/1/Documents/ted_vix_2.rds"
+ted_2 <- "C:/Users/1/Documents/ted_2.rds"
+vix_2 <- "C:/Users/1/Documents/vix_2.rds"
+const_2 <- "C:/Users/1/Documents/const_2.rds"
+
+saveRDS(fit_full,ted_vix_2)
+saveRDS(fit_ted_only,ted_2)
+saveRDS(fit_vix_only,vix_2)
+saveRDS(fit_const,const_2)
+
+processed_hmm_full<-readRDS(ted_vix_2)
+processed_hmm_ted_2<-readRDS(ted_2)
+processed_hmm_vix_2<-readRDS(vix_2)
+processed_hmm_const<-readRDS(const_2)
+
+
+
+View(processed_hmm_vix_2)
+
+unwind_diagnostics <- lapply(processed_hmms, function(x) identify_unwind_state(x$model))
+unwind_states      <- sapply(unwind_diagnostics, `[[`, "unwind_state")
+
+# Flag countries where variance and mean disagree
+disagreements <- sapply(unwind_diagnostics, function(d) d$state_by_var != d$state_by_mean)
+if (any(disagreements)) {
+  cat("Countries with max-var != min-mean identification:\n")
+  print(names(disagreements)[disagreements])
+}
 
 transition_prob_betas<-lapply(processed_hmms,function(x){
   tuple <- x$model$x
@@ -348,6 +368,7 @@ transition_prob_betas<-lapply(processed_hmms,function(x){
     beta_VIX    = c(tuple[1, 2, 3], tuple[2, 1, 3])
     )
 })
+
 
 cov_matrices<-lapply(processed_hmms,function(x){
   matr<-x$model$Cov
@@ -365,20 +386,48 @@ wald_tables<-lapply(processed_hmms,function(x){
   }
 )
 
-state_history<-lapply(processed_hmms,function(x){
-  data.frame(
-    dates=as.Date(x$date),
-    viterbi_path=x$model$viterbi_path$path,
-    viterbi_probs=x$model$viterbi_path$path_probs,
-    state_sequence=x$model$state_sequence,
-    smoothed_probs1=x$model$smoothed_probs[,1],
-    moothed_probs1=x$model$smoothed_probs[,2]
-    )
-  }
-)
+state_history <- lapply(processed_hmms, function(x) {
+  N <- nrow(x$model$Mu)
+  
+  # Rebuild Z using the SAME construction as fit_all_countries (lagged = TRUE by default)
+  Z_full <- prepare_covariates(ted, vix, lagged = TRUE)
+  Z_filt <- merge(data.frame(date = as.Date(x$dates)), Z_full, by = "date", sort = TRUE)
+  
+  stopifnot(nrow(Z_filt) == length(x$dates))  # alignment check
+  
+  Z_mat <- as.matrix(Z_filt[, c("ted", "vix")])
+  
+  # Compute transition probabilities with the same machinery as the fit
+  A_path <- .compute_A(x$model$x, Z_mat, N)   # N x N x T array
+  
+  # Build output data frame
+  out <- data.frame(
+    dates          = as.Date(x$dates),
+    viterbi_path   = x$model$viterbi_path$path,
+    viterbi_probs  = x$model$viterbi_path$path_probs,
+    state_sequence = x$model$state_sequence
+  )
+  
+  # Smoothed probabilities: one column per state
+  for (i in seq_len(N))
+    out[[paste0("smoothed_probs", i)]] <- x$model$smoothed_probs[, i]
+  
+  # Transition probabilities: all off-diagonal pairs
+  for (i in seq_len(N))
+    for (j in seq_len(N))
+      if (i != j)
+        out[[paste0("transition_", i, "_to_", j)]] <- A_path[i, j, ]
+  
+  out
+})
 
+
+
+
+
+#add vix and ted and compute transition probs based on betas
 # =============================================================================
-# STEP 5 — Check state identification
+# STEP 5 — Some tests and check state identification
 # =============================================================================
 # Unwind state should have:
 #   - negative fx_return mean  (currency depreciating)
@@ -386,6 +435,25 @@ state_history<-lapply(processed_hmms,function(x){
 
 summarise_states(hmm_results)
 
+
+library(moments)
+
+# Confirm columns are numeric, not character
+lapply(country_data, function(cd){
+  paste("skewness:",moments::skewness(cd$fx_return),
+        "kurtosis:",moments::kurtosis(cd$fx_return))
+}
+)
+
+# Check for gaps in the time series
+lapply(country_data, function(cd) {
+  gaps <- diff(as.Date(cd$date))
+  data.frame(
+    max_gap_days  = max(gaps),
+    gaps_over_5d  = sum(gaps > 5),
+    gaps_over_20d = sum(gaps > 20)
+  )
+})
 # Override manually if a country is misidentified, e.g.:
 # hmm_results[["JPY"]]$unwind_state <- 1
 # hmm_results[["JPY"]]$unwind_prob  <- hmm_results[["JPY"]]$decoded$prb[1, ]
