@@ -8,7 +8,13 @@
 # =============================================================================
 
 library(mvtnorm)
+library(future.apply)
+library(parallel)
+library(dplyr)
+library(progressr)
 
+handlers(global = TRUE)
+handlers("txtprogressbar")
 
 # =============================================================================
 # SECTION 1: DATA PREPARATION
@@ -26,7 +32,25 @@ library(mvtnorm)
 #'   d_spread = diff(y10y - y2y)   (change in 10y-2y spread)
 #'   fx_return = log(FX_t/FX_{t-1}) (positive = local ccy depreciated)
 
-prepare_covariates <- function(ted, vix, lagged = TRUE) {
+
+prepare_country <- function(yields, fx) {
+  
+  df <- merge(yields, fx, by = "date")%>%
+    mutate(date = as.Date(date,format="%Y-%m-%d"))
+  
+  # Forward-fill FX rate across gaps before computing returns
+  for (i in seq(2, nrow(df)))
+    if (is.na(df$rate[i])) df$rate[i] <- df$rate[i - 1]
+  
+  spread       <- df$X10Y - df$X2Y
+  df$d_y2y     <- c(NA, diff(df$X2Y))
+  df$d_spread  <- c(NA, diff(spread))
+  df$fx_return <- c(NA, diff(log(df$rate)))
+  
+  df[, c("date", "d_y2y", "d_spread", "fx_return")]
+  }
+
+prepare_covariates <- function(ted, vix, lagged = FALSE) {
   
   y_df <- merge(ted, vix, by = "date") %>%
     mutate(date = as.Date(date, format = "%Y-%m-%d")) %>%
@@ -209,7 +233,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
     
     # Backward pass
     beta     <- matrix(0, T, N)
-    beta[T,] <- 1 #Changed from beta[T,] <- 1 / sc[T]
+    beta[T,] <- 1 / sc[T]
     for (t in (T-1):1)
       for (i in seq_len(N))
         beta[t, i] <- sum(A[i,, t] * B[t+1,] * beta[t+1,]) / sc[t]
@@ -267,7 +291,7 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
       par     = par0,
       fn      = obj_free,
       method  = "L-BFGS-B",
-      control = list(maxit = 300, factr = 1e8)
+      control = list(maxit = 500, factr = 1e7)
     )
     
     # Reconstruct full x array from optimised free parameters
@@ -302,23 +326,53 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
   
   hess <- NULL
   se   <- NULL
+  vcov <- NULL
+  
   if (compute_hessian) {
-    # obj_free is no longer in scope after the loop, so rebuild it
-    Xi_final   <- Xi   # Xi from the last E-step
-    x_final    <- x
-    obj_final  <- function(par) {
+    # Observed-data log-likelihood as a function of transition coefficients only.
+    # Emission parameters (Mu, Cov) and Pi are held fixed at their MLEs.
+    # This gives correct SEs for the TVTP logit coefficients (β_TED, β_VIX, intercepts)
+    # via the inverse observed information matrix — not the Q-function Hessian,
+    # which would understate uncertainty (Louis 1982).
+    
+    # Rebuild B once — emissions are fixed
+    B_fixed <- matrix(0, T, N)
+    for (i in seq_len(N))
+      B_fixed[, i] <- dmvnorm(X, mean = Mu[i, ], sigma = Cov[,, i])
+    B_fixed[B_fixed == 0] <- 1e-300
+    
+    loglik_obs <- function(par) {
+      # Reconstruct full x array from free parameters
       x_try   <- array(0, dim = c(N, N, n_cov + 1))
       par_idx <- 1
       for (k in seq_len(n_cov + 1))
         for (ij in free_idx) {
-          i_      <- ((ij - 1) %% N) + 1
-          j_      <- ((ij - 1) %/% N) + 1
+          i_ <- ((ij - 1) %% N) + 1
+          j_ <- ((ij - 1) %/% N) + 1
           x_try[i_, j_, k] <- par[par_idx]
           par_idx <- par_idx + 1
         }
-      .obj_tvtp(as.vector(x_try), T, Z, Xi_final, N)
+      
+      A_try <- .compute_A(x_try, Z, N)
+      
+      # Scaled forward filter — returns sum(log(sc)) = observed-data log-likelihood
+      alpha_try    <- matrix(0, T, N)
+      sc_try       <- numeric(T)
+      alpha_try[1,] <- Pi * B_fixed[1,]
+      sc_try[1]     <- sum(alpha_try[1,]); if (sc_try[1] == 0) sc_try[1] <- 1e-300
+      alpha_try[1,] <- alpha_try[1,] / sc_try[1]
+      
+      for (t in 2:T) {
+        for (i in seq_len(N))
+          alpha_try[t, i] <- sum(alpha_try[t-1,] * A_try[, i, t]) * B_fixed[t, i]
+        sc_try[t]     <- sum(alpha_try[t,]); if (sc_try[t] == 0) sc_try[t] <- 1e-300
+        alpha_try[t,] <- alpha_try[t,] / sc_try[t]
+      }
+      
+      sum(log(sc_try))
     }
     
+    # Extract final free parameters
     final_par <- numeric(length(free_idx) * (n_cov + 1))
     par_idx   <- 1
     for (k in seq_len(n_cov + 1))
@@ -329,11 +383,15 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
         par_idx <- par_idx + 1
       }
     
-    hess <- numDeriv::hessian(obj_final, final_par)
-    vcov <- tryCatch(solve(hess), error = function(e) {
-      warning("Hessian singular — returning MASS::ginv instead"); MASS::ginv(hess)
+    # Hessian of +loglik (NOT of negative Q); observed info = -Hessian of loglik
+    hess_ll <- numDeriv::hessian(loglik_obs, final_par)
+    obs_info <- -hess_ll
+    
+    vcov <- tryCatch(solve(obs_info), error = function(e) {
+      warning("Observed information singular — using MASS::ginv"); MASS::ginv(obs_info)
     })
-    se <- sqrt(pmax(diag(vcov), 0))   # pmax guards against tiny negatives
+    se   <- sqrt(pmax(diag(vcov), 0))
+    hess <- hess_ll   # stored for diagnostics
   }
   
   
@@ -379,21 +437,6 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
 }
 
 
-# =============================================================================
-# SECTION 4: DECODE
-# =============================================================================
-
-#' Decode regime sequence for one country
-#'
-#' @param X      Matrix (T x 3): d_y2y, d_spread, fx_return
-#' @param Z      Matrix (T x 2): TED, VIX covariates
-#' @param model  Output from fit_country_hmm()
-#'
-#' @return List: states (integer T), prb (N x T)
-
-
-#redundant
-
 
 # =============================================================================
 # SECTION 5: IDENTIFY UNWIND STATE
@@ -405,9 +448,27 @@ fit_country_hmm <- function(X, Z, N = 2, cyc = 100, tol = 1e-4, seed = 42, compu
 
 #redundant
 identify_unwind_state <- function(model) {
-  which.max(model$Cov[3,3])
+  fx_var  <- model$Cov[3, 3, ]     # variance of fx_return per state
+  fx_mean <- model$Mu[, 3]          # mean fx_return per state
+  
+  state_by_var  <- which.max(fx_var)
+  state_by_mean <- which.min(fx_mean)
+  
+  if (state_by_var != state_by_mean) {
+    warning(sprintf(
+      "Unwind state ambiguous: max-variance state = %d, min-mean state = %d",
+      state_by_var, state_by_mean
+    ))
+  }
+  
+  list(
+    unwind_state  = state_by_var,   # primary identification
+    state_by_var  = state_by_var,
+    state_by_mean = state_by_mean,
+    fx_var        = fx_var,
+    fx_mean       = fx_mean
+  )
 }
-
 
 # =============================================================================
 # SECTION 6: FIT ALL COUNTRIES
@@ -420,47 +481,61 @@ identify_unwind_state <- function(model) {
 #' @param cyc           Max EM iterations
 #' @param tol           Convergence tolerance
 
+
+
+
 fit_all_countries <- function(country_data, ted, vix,
-                              N = 2, cyc = 100, tol = 1e-4, lagged = TRUE) {
+                              covariates = c("ted", "vix"),  # NEW
+                              N = 2, cyc = 100, tol = 1e-4, lagged = TRUE,
+                              parallel = TRUE, n_workers = NULL) {
   
-  # Build global Z once
   Z_full <- prepare_covariates(ted, vix, lagged = lagged)
   
-  results <- vector("list", length(country_data))
-  names(results) <- names(country_data)
-  
-  for (cc in names(country_data)) {
-    cat(sprintf("\n--- Fitting %s ---\n", cc))
-    
-    cd <- country_data[[cc]]
-    cd$date <- as.Date(cd$date)
-    
-    # Slice Z to country's dates
-    merged <- merge(cd, Z_full, by = "date", sort = TRUE)
-    if (any(c(is.na(merged$ted),is.na(merged$vix)))) {
-      message(paste(cc,"Contains NAs in its covariates"))
-      next
-    }
-    
-    X <- as.matrix(merged[, c("d_y2y", "d_spread", "fx_return")])
-    Z <- as.matrix(merged[, c("ted", "vix")])
-    
-    cat(sprintf("  T = %d observations after alignment\n", nrow(X)))
-    
-    model   <- fit_country_hmm(X, Z, N = N, cyc = cyc, tol = tol)
-    u_state <- identify_unwind_state(model)
-    
-    results[[cc]] <- list(
-      model        = model,
-      unwind_state = u_state,
-      dates        = merged$date
-    )
-    
-    cat(sprintf("  Unwind state: %d\n", u_state))
-    cat(sprintf("  Unwind state means -> d_y2y: %.4f  d_spread: %.4f  fx_ret: %.5f\n",
-                model$Mu[u_state, 1], model$Mu[u_state, 2], model$Mu[u_state, 3]))
+  if (parallel) {
+    if (is.null(n_workers)) n_workers <- max(1, parallel::detectCores() - 2)
+    plan(multisession, workers = n_workers)
+    on.exit(plan(sequential), add = TRUE)
+  } else {
+    plan(sequential)
   }
   
+  cc_names <- names(country_data)
+  
+  with_progress({
+    p <- progressor(along = cc_names)
+    
+    results <- future_lapply(cc_names, function(cc) {
+      p(sprintf("Fitting %s", cc))
+      
+      cd      <- country_data[[cc]]
+      cd$date <- as.Date(cd$date)
+      
+      merged <- merge(cd, Z_full, by = "date", sort = TRUE)
+      
+      # Check NAs only in the covariates actually being used
+      if (length(covariates) > 0) {
+        cov_check <- merged[, covariates, drop = FALSE]
+        if (any(is.na(cov_check))) {
+          return(list(error = paste(cc, "contains NAs in covariates")))
+        }
+      }
+      
+      X <- as.matrix(merged[, c("d_y2y", "d_spread", "fx_return")])
+      
+      # Build Z based on covariates selection
+      if (length(covariates) == 0) {
+        # Constant TP: pass an empty matrix with T rows
+        Z <- matrix(0, nrow = nrow(X), ncol = 0)
+      } else {
+        Z <- as.matrix(merged[, covariates, drop = FALSE])
+      }
+      
+      model <- fit_country_hmm(X, Z, N = N, cyc = cyc, tol = tol)
+      list(model = model, dates = merged$date)
+    }, future.seed = TRUE)
+  })
+  
+  names(results) <- cc_names
   results
 }
 
