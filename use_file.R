@@ -423,6 +423,297 @@ state_history <- lapply(processed_hmms, function(x) {
 
 
 
+                        
+
+cot_positioning<-read.csv("Complete_CoT.csv")
+
+cot_currencies_complete<-c("CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+                  "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE",
+                  "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE",
+                  "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE",
+                  "EURO FX - CHICAGO MERCANTILE EXCHANGE", 
+                  "AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+                  "NEW ZEALAND DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+                  "MEXICAN PESO - CHICAGO MERCANTILE EXCHANGE",
+                  "BRAZILIAN REAL - CHICAGO MERCANTILE EXCHANGE",
+                  "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE",
+                  "NZ DOLLAR - CHICAGO MERCANTILE EXCHANGE")
+cot_currencies <- head(cot_currencies_complete,-2)
+
+
+names(cot_currencies)<-c("CAD","CHF","GBP","JPY","EUR","AUD","NZD","MXN","BRL")
+ticker_map <- setNames(names(cot_currencies), cot_currencies)
+
+
+
+cot_positioning<-cot_positioning%>%
+  filter(Market_and_Exchange_Names %in% cot_currencies_complete)%>%
+  mutate(Market_and_Exchange_Names = case_when(
+    Market_and_Exchange_Names == "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE"
+    ~ "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE",
+    Market_and_Exchange_Names == "NZ DOLLAR - CHICAGO MERCANTILE EXCHANGE"
+    ~ "NEW ZEALAND DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    TRUE ~ Market_and_Exchange_Names
+  )) %>%
+  mutate(Market_and_Exchange_Names = ticker_map[Market_and_Exchange_Names])
+
+
+
+out <- split( cot_positioning , f = cot_positioning$Market_and_Exchange_Names )
+
+lapply(regime_country_data[names(cot_currencies)],function(x)c(min(x$date),max(x$date)))
+lapply(out,function(x)c(min(x$Report_Date_as_MM_DD_YYYY ),max(x$Report_Date_as_MM_DD_YYYY )))
+
+
+library(data.table)
+cot_cols <- c(
+  "Open_Interest_All",
+  "Dealer_Positions_Long_All", "Dealer_Positions_Short_All", "Dealer_Positions_Spread_All",
+  "Asset_Mgr_Positions_Long_All", "Asset_Mgr_Positions_Short_All", "Asset_Mgr_Positions_Spread_All",
+  "Lev_Money_Positions_Long_All", "Lev_Money_Positions_Short_All", "Lev_Money_Positions_Spread_All",
+  "Other_Rept_Positions_Long_All", "Other_Rept_Positions_Short_All", "Other_Rept_Positions_Spread_All",
+  "Tot_Rept_Positions_Long_All", "Tot_Rept_Positions_Short_All",
+  "NonRept_Positions_Long_All", "NonRept_Positions_Short_All",
+  "Change_in_Open_Interest_All",
+  "Change_in_Dealer_Long_All", "Change_in_Dealer_Short_All", "Change_in_Dealer_Spread_All",
+  "Change_in_Asset_Mgr_Long_All", "Change_in_Asset_Mgr_Short_All", "Change_in_Asset_Mgr_Spread_All",
+  "Change_in_Lev_Money_Long_All", "Change_in_Lev_Money_Short_All", "Change_in_Lev_Money_Spread_All",
+  "Change_in_Other_Rept_Long_All", "Change_in_Other_Rept_Short_All", "Change_in_Other_Rept_Spread_All",
+  "Change_in_Tot_Rept_Long_All", "Change_in_Tot_Rept_Short_All",
+  "Change_in_NonRept_Long_All", "Change_in_NonRept_Short_All",
+  "Pct_of_Open_Interest_All",
+  "Pct_of_OI_Dealer_Long_All", "Pct_of_OI_Dealer_Short_All", "Pct_of_OI_Dealer_Spread_All",
+  "Pct_of_OI_Asset_Mgr_Long_All", "Pct_of_OI_Asset_Mgr_Short_All", "Pct_of_OI_Asset_Mgr_Spread_All",
+  "Pct_of_OI_Lev_Money_Long_All", "Pct_of_OI_Lev_Money_Short_All", "Pct_of_OI_Lev_Money_Spread_All",
+  "Pct_of_OI_Other_Rept_Long_All", "Pct_of_OI_Other_Rept_Short_All", "Pct_of_OI_Other_Rept_Spread_All",
+  "Pct_of_OI_Tot_Rept_Long_All", "Pct_of_OI_Tot_Rept_Short_All",
+  "Pct_of_OI_NonRept_Long_All", "Pct_of_OI_NonRept_Short_All",
+  "Traders_Tot_All",
+  "Traders_Dealer_Long_All", "Traders_Dealer_Short_All", "Traders_Dealer_Spread_All",
+  "Traders_Asset_Mgr_Long_All", "Traders_Asset_Mgr_Short_All", "Traders_Asset_Mgr_Spread_All",
+  "Traders_Lev_Money_Long_All", "Traders_Lev_Money_Short_All", "Traders_Lev_Money_Spread_All",
+  "Traders_Other_Rept_Long_All", "Traders_Other_Rept_Short_All", "Traders_Other_Rept_Spread_All",
+  "Traders_Tot_Rept_Long_All", "Traders_Tot_Rept_Short_All",
+  "Conc_Gross_LE_4_TDR_Long_All", "Conc_Gross_LE_4_TDR_Short_All",
+  "Conc_Gross_LE_8_TDR_Long_All", "Conc_Gross_LE_8_TDR_Short_All",
+  "Conc_Net_LE_4_TDR_Long_All", "Conc_Net_LE_4_TDR_Short_All",
+  "Conc_Net_LE_8_TDR_Long_All", "Conc_Net_LE_8_TDR_Short_All"
+)
+
+merge_one <- function(ccy) {
+  daily <- as.data.table(regime_country_data[[ccy]])
+  cot   <- as.data.table(out[[ccy]])
+  
+  daily[, date := as.Date(date)]
+  cot[, Report_Date := as.Date(Report_Date_as_MM_DD_YYYY)]
+  cot[, `:=`(win_start = Report_Date - 6, win_end = Report_Date)]
+  daily[, dummy := date]
+  setkey(cot, win_start, win_end)
+  
+  by_cols <- c("Report_Date", cot_cols)
+  
+  agg <- foverlaps(daily, cot,
+                   by.x = c("date", "dummy"),
+                   by.y = c("win_start", "win_end"),
+                   nomatch = NULL)[
+                     , .(crash_week = mean(crash_state) >= 0.5,
+                         n_days     = .N,
+                         fx_cum     = sum(fx_return)),
+                     by = by_cols]
+  
+  agg[, ccy := ccy]
+  agg[]
+}
+
+weekly <- rbindlist(lapply(names(out), merge_one))
+weekly <- weekly[!(ccy=="BRL" & Report_Date < as.Date("2015-05-01"))]
+weekly_list <- split(weekly, f = weekly$ccy)
+
+crash_event_flag <- function(x) {
+  x <- x[order(x$Report_Date), ]
+  n <- nrow(x)
+  flags <- rep(FALSE, n)
+  for (i in 9:(n - 4)) {
+    if (x$crash_week[i] && !any(x$crash_week[(i-8):(i-1)])) flags[i] <- TRUE
+  }
+  flags
+}
+
+weekly_list <- lapply(weekly_list, function(x) {
+  x$crash_event <- crash_event_flag(x)
+  x
+})
+
+
+build_panel <- function(df,vars = c(cot_cols,
+                                 "Dealer_Positions_Net_All",
+                                 "Asset_Mgr_Positions_Net_All",
+                                 "Lev_Money_Positions_Net_All",
+                                 "Other_Rept_Positions_Net_All",
+                                 "fx_cum"),
+                        t_before = 8, t_after = 4) {
+  df <- df[order(df$Report_Date), ]%>%
+    mutate(
+      Dealer_Positions_Net_All = Dealer_Positions_Long_All- Dealer_Positions_Short_All,
+      Asset_Mgr_Positions_Net_All = Asset_Mgr_Positions_Long_All - Asset_Mgr_Positions_Short_All,
+      Lev_Money_Positions_Net_All = Lev_Money_Positions_Long_All - Lev_Money_Positions_Short_All,
+      Other_Rept_Positions_Net_All = Other_Rept_Positions_Long_All - Other_Rept_Positions_Short_All
+    )
+  
+  event_idx <- which(df$crash_event)   # already window-safe by construction
+  ccy <- df$ccy[1]
+  
+  t_labels <- c(paste0("t", -t_before:-1), "t0", paste0("t+", 1:t_after))
+  t_window <- t_before + t_after + 1L  # 13
+  
+  arr <- array(
+    NA_real_,
+    dim      = c(length(event_idx), t_window, length(vars), 1L),
+    dimnames = list(NULL, t_labels, vars, ccy)
+  )
+  
+  for (e in seq_along(event_idx)) {
+    rows <- (event_idx[e] - t_before):(event_idx[e] + t_after)
+    for (v in seq_along(vars)) {
+      arr[e, , v, 1L] <- as.numeric(df[[vars[v]]][rows])
+    }
+  }
+  arr
+}
+
+
+panels_data <- lapply(weekly_list, build_panel)   # each [N_ccy x 13 x nvars x 1], 4th dim named by ccy
+saveRDS(panels_data,"panel_data.rds")
+panels_data<-readRDS("panel_data.rds")
+
+
+# net leveraged-money flow (contracts) = ΔLong − ΔShort, per event × tau
+
+
+ccys <- names(panels_data)                              # currency dimension
+
+op <- par(mfrow = c(3, 3))
+
+
+
+
+plot_panels<-function(player=c("Ass_Mgr","Dealer","Lev_Money","Others"),
+                      position=c("Long","Short", "Net")){
+  
+  par(mfrow = c(3, 3), mar = c(2, 3, 2, 1), oma = c(0, 0, 2, 0))
+  
+  player<-case_when(
+    player == "Ass_Mgr" ~ "Asset_Mgr_Positions_",
+    player == "Dealer" ~ "Dealer_Positions_",
+    player == "Lev_Money" ~ "Lev_Money_Positions_",
+    player == "Others" ~ "Other_Rept_Positions_",
+    TRUE ~ NA)  
+  position<-case_when(
+    position == "Long" ~ "Long_All",
+    position == "Short" ~ "Short_All",
+    position == "Net" ~ "Net_All",
+    TRUE ~ NA) 
+  
+  if(any(is.na(c(player,position)))) break
+  
+  var<-paste0(player,position)
+  for (c in ccys){
+    tab <- panels_data[[c]][,,var,]
+    dn  <- panels_data[[c]][,"t0","fx_cum",] < 0     # down-crash onsets
+    x   <- as.integer(sub("^t\\+","",sub("^t-","-",sub("^t0$","0",colnames(tab)))))
+    matplot(x, t(tab), type="l", col="grey90", lty=1, main=c, ylab=var); abline(v=0,lty=3)
+    lines(x, colMeans(tab[dn,,drop=FALSE]),  lwd=3, col="firebrick")  # down
+    lines(x, colMeans(tab[!dn,,drop=FALSE]), lwd=3, col="steelblue")  # up
+  }
+}
+
+
+
+plot_panels(player = "Lev_Money", position = "Net")
+
+
+
+
+# =============================================================================
+# EVENT STUDY
+# =============================================================================
+
+es_panel <- function(arr, ccy,
+                     player   = c("Ass_Mgr","Dealer","Lev_Money","Others"),
+                     position = c("Long","Short","Net"),
+                     crash    = c("down","up","all")) {
+  
+  player   <- match.arg(player)
+  position <- match.arg(position)
+  crash    <- match.arg(crash)
+  
+  # identical mapping to plot_panels
+  player <- case_when(
+    player == "Ass_Mgr"   ~ "Asset_Mgr_Positions_",
+    player == "Dealer"    ~ "Dealer_Positions_",
+    player == "Lev_Money" ~ "Lev_Money_Positions_",
+    player == "Others"    ~ "Other_Rept_Positions_",
+    TRUE ~ NA_character_)
+  position <- case_when(
+    position == "Long"  ~ "Long_All",
+    position == "Short" ~ "Short_All",
+    position == "Net"   ~ "Net_All",
+    TRUE ~ NA_character_)
+  
+  if (any(is.na(c(player, position)))) stop("unknown player/position")
+  
+  var <- paste0(player, position)
+  m   <- arr[[ccy]][ , , var, ]
+  
+  # down-crash onsets, same definition as plot_panels
+  dn  <- arr[[ccy]][ , "t0", "fx_cum", ] < 0
+  keep <- switch(crash, down = dn, up = !dn, all = rep(TRUE, length(dn)))
+  m   <- m[keep, , drop = FALSE]
+  
+  data.table(y     = as.vector(m),
+             event = factor(as.vector(row(m))),
+             tau   = factor(rep(colnames(m), each = nrow(m)),
+                            levels = colnames(m)))
+}
+
+run_es <- function(arr, ccy, player = "Lev_Money", position = "Net",
+                   crash = "down", ref = "t-1") {
+  feols(as.formula(sprintf("y ~ i(tau, ref = '%s') | event", ref)),
+        data    = es_panel(arr, ccy, player = player, position = position,
+                           crash = crash),
+        cluster = ~event)
+}
+
+
+
+plot_es <- function(arr = panels_data, player = "Lev_Money", position = "Net",
+                    crash = "down", ref = "t-1") {
+  
+  par(mfrow = c(3, 3), mar = c(2, 3, 2, 1), oma = c(0, 0, 4, 0))  # more top room
+  
+  mods <- setNames(
+    lapply(ccys, function(c) run_es(arr, c, player = player,
+                                    position = position, crash = crash,
+                                    ref = ref)),
+    ccys)
+  
+  ylab <- sprintf("%s %s (contracts), %s-crash, vs %s",
+                  player, position, crash, ref)
+  for (c in ccys)
+    iplot(mods[[c]], main = c, xlab = "event week", ylab = ylab)
+  
+  # master title across the whole panel
+  mtext(sprintf("Event study: %s %s positions around %s-crash onsets",
+                player, position, crash),
+        outer = TRUE, cex = 1.3, font = 2, line = 1.5)
+  mtext(sprintf("Coefficients vs %s, event (row) fixed effects, clustered by event",
+                ref),
+        outer = TRUE, cex = 0.9, line = 0.1)
+  
+  invisible(mods)
+}
+
+plot_es(player = "Lev_Money", position = "Net", crash = "all")
 
 
 #add vix and ted and compute transition probs based on betas
